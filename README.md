@@ -1,27 +1,32 @@
 # ordinals-renderer
 
-An [OPNet](https://opnet.org) node plugin that serves Ordinals inscription content directly from OPNet nodes.
+An [OPNet](https://opnet.org) node plugin that serves Ordinals inscription content for **any OP721 contract** whose `tokenURI(tokenId)` returns an inscription ID.
 
-Resolves `tokenURI(tokenId)` on the [OrdinalsVault](https://github.com/Lafourkad/ordinals-vault) OP721 contract to get an inscription ID, then proxies the content from a local `ord` node. Any OPNet node running this plugin becomes a full NFT metadata and content resolver.
+Any OPNet node running this plugin becomes a full NFT content and metadata resolver — no per-collection configuration needed.
 
 ---
 
 ## Endpoints
 
-All routes are namespaced under the plugin base path (`/plugins/ordinals-renderer`):
+All routes are namespaced under `/plugins/ordinals-renderer`:
 
-### `GET /metadata/:tokenId`
+### `GET /metadata/:contractAddress/:tokenId`
 
-Returns OP721-compatible JSON metadata for wallets and marketplaces.
+Returns OP721-compatible metadata JSON.
+
+```
+GET /plugins/ordinals-renderer/metadata/op1q.../42
+```
 
 ```json
 {
-    "name": "My Collection #42",
-    "description": "Ordinals bridged to OPNet",
-    "image": "content/42",
+    "name":         "op1q... #42",
+    "description":  "",
+    "image":        "content/op1q.../42",
     "external_url": "https://ordinals.com/inscription/abc123...i0",
     "attributes": [
         { "trait_type": "Inscription ID",     "value": "abc123...i0" },
+        { "trait_type": "Contract",           "value": "op1q..." },
         { "trait_type": "Inscription Number", "value": 123456 },
         { "trait_type": "Content Type",       "value": "image/webp" },
         { "trait_type": "Genesis Block",      "value": 850000 }
@@ -29,41 +34,29 @@ Returns OP721-compatible JSON metadata for wallets and marketplaces.
 }
 ```
 
-### `GET /content/:tokenId`
+### `GET /content/:contractAddress/:tokenId`
 
 Returns the raw inscription content as base64-encoded data.
 
+```
+GET /plugins/ordinals-renderer/content/op1q.../42
+```
+
 ```json
 {
-    "contentType":   "image/webp",
-    "data":          "<base64-encoded bytes>",
-    "inscriptionId": "abc123...i0",
-    "tokenId":       "42"
+    "contractAddress": "op1q...",
+    "tokenId":         "42",
+    "inscriptionId":   "abc123...i0",
+    "contentType":     "image/webp",
+    "data":            "<base64-encoded bytes>"
 }
 ```
 
-Decode with:
+Decode:
 ```js
 const bytes = Buffer.from(response.data, 'base64');
-// or in the browser:
+// browser:
 const bytes = Uint8Array.from(atob(response.data), c => c.charCodeAt(0));
-```
-
----
-
-## How It Works
-
-```
-GET /metadata/:tokenId  or  GET /content/:tokenId
-    │
-    ├── resolveInscriptionId(tokenId)
-    │       └── contract.tokenURI(tokenId)  [OP_721_ABI, OPNet RPC]
-    │               → returns inscriptionId (e.g. "abc123...i0")
-    │
-    └── OrdClient.getInscription(inscriptionId)    [metadata route]
-        OrdClient.getInscriptionContent(inscriptionId)  [content route]
-                └── GET http://localhost/inscription/{id}[/content]
-                        [local ord node]
 ```
 
 ---
@@ -75,6 +68,24 @@ GET /metadata/:tokenId  or  GET /content/:tokenId
   ```bash
   ord --bitcoin-rpc-url http://127.0.0.1:8332 server --http --http-port 80
   ```
+- The OP721 contract's `tokenURI(tokenId)` must return an Ordinals inscription ID (e.g. `"a3f...c2i0"`)
+
+---
+
+## How It Works
+
+```
+GET /content/:contractAddress/:tokenId
+    │
+    ├── contract.tokenURI(tokenId)   [OP_721_ABI, OPNet RPC]
+    │       → returns inscriptionId (e.g. "abc123...i0")
+    │
+    └── GET http://localhost/inscription/{id}/content  [local ord node]
+            → raw bytes + Content-Type
+            → returned as base64
+```
+
+No contract-specific configuration — just point it at any OP721 address.
 
 ---
 
@@ -91,60 +102,34 @@ Copy `dist/` and `plugin.json` to your OPNet node's plugin directory.
 
 ## Configuration
 
-Copy `plugin.config.example.json` to `plugin.config.json` and fill in your values:
-
 ```json
 {
     "renderer": {
-        "vaultContractAddress": "op1q...",
-        "ordNodeUrl":           "http://localhost:80",
-        "opnetRpcUrl":          "https://mainnet.opnet.org/json-rpc",
-        "network":              "mainnet",
-        "collectionName":       "My Ordinals Collection",
-        "collectionDescription": "Ordinals bridged to OPNet"
+        "ordNodeUrl":  "http://localhost:80",
+        "opnetRpcUrl": "https://mainnet.opnet.org/json-rpc",
+        "network":     "mainnet"
     }
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `vaultContractAddress` | Deployed OrdinalsVault contract address |
 | `ordNodeUrl` | Local ord node HTTP URL |
 | `opnetRpcUrl` | OPNet JSON-RPC endpoint |
 | `network` | `mainnet` or `regtest` |
-| `collectionName` | Collection name used in metadata `name` field |
-| `collectionDescription` | Collection description used in metadata |
-
----
-
-## Plugin Permissions
-
-```json
-{
-    "api": {
-        "addEndpoints": true,
-        "basePath": "/plugins/ordinals-renderer",
-        "routes": [
-            { "path": "metadata/:tokenId", "method": "GET" },
-            { "path": "content/:tokenId",  "method": "GET" }
-        ]
-    },
-    "filesystem": { "configDir": true }
-}
-```
 
 ---
 
 ## Notes
 
-- Content is returned as base64 because OPNet plugin route handlers communicate over worker thread messaging — binary streaming is not supported at the plugin boundary.
-- The `image` field in `/metadata` is a relative path (`content/{tokenId}`), resolved against the plugin base URL by the client.
-- Token IDs not yet minted or without a set inscription will return a 404-equivalent error object.
+- Content is returned as base64 because OPNet plugin route handlers communicate through worker thread messaging — binary streaming is not supported at the plugin boundary.
+- The `image` field in `/metadata` is a relative path resolved against the plugin base URL by the client.
+- Returns an error object `{ "error": "..." }` if the token doesn't exist, isn't minted, or the `tokenURI` is not a valid inscription ID.
 
 ---
 
 ## Related
 
-- [ordinals-vault](https://github.com/Lafourkad/ordinals-vault) — The OrdinalsVault OP721 contract
-- [ordinals-vault-oracle](https://github.com/Lafourkad/ordinals-vault-oracle) — Plugin to watch burns and mint OP721 tokens
+- [ordinals-vault](https://github.com/Lafourkad/ordinals-vault) — OP721 contract that bridges Bitcoin Ordinals to OPNet
+- [ordinals-vault-oracle](https://github.com/Lafourkad/ordinals-vault-oracle) — Plugin to watch burns and attest them on-chain
 - [OPNet Documentation](https://docs.opnet.org)

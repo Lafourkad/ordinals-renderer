@@ -1,7 +1,7 @@
 {
     "name": "ordinals-renderer",
-    "version": "1.0.0",
-    "description": "Serves Ordinals inscription content via OPNet nodes — tokenURI resolution + ERC721 metadata",
+    "version": "1.1.0",
+    "description": "Serves Ordinals inscription content for any OP721 contract via tokenURI resolution",
     "opnetVersion": "^1.0.0",
     "main": "dist/index.jsc",
     "target": "bytenode",
@@ -27,15 +27,15 @@
             "basePath": "/plugins/ordinals-renderer",
             "routes": [
                 {
-                    "path": "content/:tokenId",
+                    "path": "metadata/:contractAddress/:tokenId",
                     "method": "GET",
-                    "handler": "handleContent",
+                    "handler": "handleMetadata",
                     "rateLimit": 200
                 },
                 {
-                    "path": "metadata/:tokenId",
+                    "path": "content/:contractAddress/:tokenId",
                     "method": "GET",
-                    "handler": "handleMetadata",
+                    "handler": "handleContent",
                     "rateLimit": 200
                 }
             ]

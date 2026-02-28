@@ -1,7 +1,6 @@
 import { PluginBase } from '@btc-vision/plugin-sdk';
 import type { IPluginContext, IPluginRouter, IPluginHttpRequest } from '@btc-vision/plugin-sdk';
-import { getContract, JSONRpcProvider } from 'opnet';
-import { OP_721_ABI } from 'opnet';
+import { getContract, JSONRpcProvider, OP_721_ABI } from 'opnet';
 import type { IOP721Contract, TokenURI } from 'opnet';
 import { networks } from '@btc-vision/bitcoin';
 import { OrdClient } from './services/OrdClient.js';
@@ -9,18 +8,18 @@ import type { IRendererConfig, IOP721Metadata } from './types/index.js';
 
 // ─── Contract Interface ────────────────────────────────────────────────────────
 
-/** OrdinalsVault uses the standard OP721 ABI — tokenURI(tokenId) is already included */
-interface IOrdinalsVaultRenderer extends IOP721Contract {
+interface IOP721WithTokenURI extends IOP721Contract {
     tokenURI(tokenId: bigint): Promise<TokenURI>;
 }
 
 // ─── Response Types ────────────────────────────────────────────────────────────
 
 interface IContentResponse {
+    readonly contractAddress: string;
+    readonly tokenId: string;
+    readonly inscriptionId: string;
     readonly contentType: string;
     readonly data: string; // base64-encoded inscription content
-    readonly inscriptionId: string;
-    readonly tokenId: string;
 }
 
 interface IErrorResponse {
@@ -32,35 +31,32 @@ type HandlerResult<T> = T | IErrorResponse;
 // ─── Plugin ───────────────────────────────────────────────────────────────────
 
 /**
- * OrdinalsVault Renderer Plugin
+ * Ordinals Renderer Plugin
  *
- * Exposes HTTP endpoints on the OPNet node to resolve and serve
- * Ordinals inscription content. Reads `tokenURI(tokenId)` from the
- * OrdinalsVault OP721 contract, then proxies content from the local ord node.
+ * Serves inscription content for ANY OP721 contract whose `tokenURI(tokenId)`
+ * returns a valid Ordinals inscription ID (e.g. "abc123...i0").
  *
- * Routes (namespaced under `permissions.api.basePath`):
- *   GET /metadata/:tokenId  → OP721-compatible JSON metadata
- *   GET /content/:tokenId   → Raw content as base64 + contentType
+ * Routes (namespaced under plugin base path):
+ *   GET /metadata/:contractAddress/:tokenId  → OP721 metadata JSON
+ *   GET /content/:contractAddress/:tokenId   → inscription content as base64
  *
- * The `data` field in `/content` is base64-encoded. Callers must decode it
- * with `Buffer.from(data, 'base64')` or `atob(data)` before rendering.
+ * Example:
+ *   GET /plugins/ordinals-renderer/content/op1q.../42
  *
  * Plugin config (plugin.config.json):
  * ```json
  * {
- *   "vaultContractAddress": "op1q...",
- *   "ordNodeUrl":           "http://localhost:80",
- *   "opnetRpcUrl":          "https://mainnet.opnet.org/json-rpc",
- *   "network":              "mainnet",
- *   "collectionName":       "My Ordinals Collection",
- *   "collectionDescription": "Bridged Ordinals on OPNet"
+ *   "renderer": {
+ *     "ordNodeUrl":  "http://localhost:80",
+ *     "opnetRpcUrl": "https://mainnet.opnet.org/json-rpc",
+ *     "network":     "mainnet"
+ *   }
  * }
  * ```
  */
 export default class OrdinalsRendererPlugin extends PluginBase {
     private ordClient!: OrdClient;
     private provider!: JSONRpcProvider;
-    private config!: IRendererConfig;
 
     public override async onLoad(context: IPluginContext): Promise<void> {
         await super.onLoad(context);
@@ -70,26 +66,17 @@ export default class OrdinalsRendererPlugin extends PluginBase {
             throw new Error('OrdinalsRenderer: missing "renderer" config section');
         }
 
-        this.config = config;
-
         const network = config.network === 'mainnet' ? networks.bitcoin : networks.regtest;
 
         this.provider = new JSONRpcProvider(config.opnetRpcUrl, network);
         this.ordClient = new OrdClient(config.ordNodeUrl);
 
-        this.context.logger.info('OrdinalsRenderer loaded — serving inscription content');
+        this.context.logger.info('OrdinalsRenderer loaded — serving inscription content for any OP721');
     }
 
-    /**
-     * Registers HTTP routes. Called once during plugin startup.
-     *
-     * Note: handler strings must be method names on this class.
-     *
-     * @param router - Plugin router (routes namespaced under plugin base path)
-     */
     public override registerRoutes(router: IPluginRouter): void {
-        router.get('/metadata/:tokenId', 'handleMetadata');
-        router.get('/content/:tokenId', 'handleContent');
+        router.get('/metadata/:contractAddress/:tokenId', 'handleMetadata');
+        router.get('/content/:contractAddress/:tokenId', 'handleContent');
     }
 
     public override async onUnload(): Promise<void> {
@@ -101,44 +88,49 @@ export default class OrdinalsRendererPlugin extends PluginBase {
     // ─── Route Handlers ─────────────────────────────────────────────────────────
 
     /**
-     * Serves OP721-compatible JSON metadata.
+     * Returns OP721 metadata for a given contract + tokenId.
      *
-     * Response shape:
+     * Works with any OP721 contract whose tokenURI() returns an inscription ID.
+     *
+     * Response:
      * ```json
      * {
-     *   "name":         "Collection #1",
-     *   "description":  "...",
-     *   "image":        "content/1",
+     *   "name":         "Contract #42",
+     *   "description":  "",
+     *   "image":        "content/op1q.../42",
      *   "external_url": "https://ordinals.com/inscription/abc...i0",
      *   "attributes":   [...]
      * }
      * ```
-     *
-     * @param request - HTTP request (params.tokenId)
-     * @returns OP721 metadata object or error object
      */
     public async handleMetadata(
         request: IPluginHttpRequest,
     ): Promise<HandlerResult<IOP721Metadata>> {
+        const contractAddress = request.params['contractAddress'];
         const tokenId = this.parseTokenId(request.params['tokenId']);
+
+        if (contractAddress === undefined || contractAddress.length === 0) {
+            return { error: 'Missing contractAddress' };
+        }
         if (tokenId === null) {
             return { error: 'Invalid tokenId — must be a non-negative integer' };
         }
 
-        const inscriptionId = await this.resolveInscriptionId(tokenId);
+        const inscriptionId = await this.resolveInscriptionId(contractAddress, tokenId);
         if (inscriptionId === null) {
-            return { error: 'Token not found or inscription not set' };
+            return { error: 'Token not found, not minted, or tokenURI is not an inscription ID' };
         }
 
         const inscription = await this.ordClient.getInscription(inscriptionId);
 
         const metadata: IOP721Metadata = {
-            name: `${this.config.collectionName} #${tokenId.toString()}`,
-            description: this.config.collectionDescription,
-            image: `content/${tokenId.toString()}`,
+            name: `${contractAddress.slice(0, 10)}... #${tokenId.toString()}`,
+            description: '',
+            image: `content/${contractAddress}/${tokenId.toString()}`,
             external_url: `https://ordinals.com/inscription/${inscriptionId}`,
             attributes: [
                 { trait_type: 'Inscription ID', value: inscriptionId },
+                { trait_type: 'Contract', value: contractAddress },
                 ...(inscription !== null
                     ? [
                           { trait_type: 'Inscription Number', value: inscription.number },
@@ -153,59 +145,70 @@ export default class OrdinalsRendererPlugin extends PluginBase {
     }
 
     /**
-     * Serves the raw inscription content as base64-encoded data.
+     * Returns raw inscription content as base64-encoded data.
      *
-     * Response shape:
+     * Works with any OP721 contract whose tokenURI() returns an inscription ID.
+     *
+     * Response:
      * ```json
      * {
-     *   "contentType":   "image/webp",
-     *   "data":          "<base64>",
-     *   "inscriptionId": "abc...i0",
-     *   "tokenId":       "42"
+     *   "contractAddress": "op1q...",
+     *   "tokenId":         "42",
+     *   "inscriptionId":   "abc...i0",
+     *   "contentType":     "image/webp",
+     *   "data":            "<base64>"
      * }
      * ```
-     *
-     * @param request - HTTP request (params.tokenId)
-     * @returns Content response or error object
      */
     public async handleContent(
         request: IPluginHttpRequest,
     ): Promise<HandlerResult<IContentResponse>> {
+        const contractAddress = request.params['contractAddress'];
         const tokenId = this.parseTokenId(request.params['tokenId']);
+
+        if (contractAddress === undefined || contractAddress.length === 0) {
+            return { error: 'Missing contractAddress' };
+        }
         if (tokenId === null) {
             return { error: 'Invalid tokenId' };
         }
 
-        const inscriptionId = await this.resolveInscriptionId(tokenId);
+        const inscriptionId = await this.resolveInscriptionId(contractAddress, tokenId);
         if (inscriptionId === null) {
-            return { error: 'Token not found or inscription not set' };
+            return { error: 'Token not found, not minted, or tokenURI is not an inscription ID' };
         }
 
         const content = await this.ordClient.getInscriptionContent(inscriptionId);
         if (content === null) {
-            return { error: 'Inscription content not found in ord' };
+            return { error: 'Inscription content not found in local ord node' };
         }
 
         return {
+            contractAddress,
+            tokenId: tokenId.toString(),
+            inscriptionId,
             contentType: content.contentType,
             data: Buffer.from(content.data).toString('base64'),
-            inscriptionId,
-            tokenId: tokenId.toString(),
         };
     }
 
     // ─── Private Helpers ────────────────────────────────────────────────────────
 
     /**
-     * Resolves a tokenId → inscriptionId by calling `tokenURI()` on the contract.
+     * Calls tokenURI(tokenId) on any OP721 contract and returns the inscription ID.
      *
-     * @param tokenId - OP721 token ID
-     * @returns Inscription ID string, or null if not found / not set
+     * Returns null if the token doesn't exist, is not minted, or the URI is empty/invalid.
+     *
+     * @param contractAddress - OP721 contract address
+     * @param tokenId - Token ID
      */
-    private async resolveInscriptionId(tokenId: bigint): Promise<string | null> {
+    private async resolveInscriptionId(
+        contractAddress: string,
+        tokenId: bigint,
+    ): Promise<string | null> {
         try {
-            const contract = getContract<IOrdinalsVaultRenderer>(
-                this.config.vaultContractAddress,
+            const contract = getContract<IOP721WithTokenURI>(
+                contractAddress,
                 OP_721_ABI,
                 this.provider,
                 this.provider.network,
@@ -224,16 +227,8 @@ export default class OrdinalsRendererPlugin extends PluginBase {
         }
     }
 
-    /**
-     * Parses a tokenId URL param string → bigint. Returns null on invalid input.
-     *
-     * @param raw - Raw string from URL params
-     * @returns Non-negative bigint, or null
-     */
     private parseTokenId(raw: string | undefined): bigint | null {
-        if (raw === undefined || raw.length === 0) {
-            return null;
-        }
+        if (raw === undefined || raw.length === 0) return null;
         try {
             const n = BigInt(raw);
             return n >= 0n ? n : null;

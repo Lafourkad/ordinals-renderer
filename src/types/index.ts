@@ -1,11 +1,8 @@
 /** Renderer plugin config */
 export interface IRendererConfig {
-    readonly vaultContractAddress: string;
     readonly ordNodeUrl: string;
     readonly opnetRpcUrl: string;
     readonly network: 'mainnet' | 'regtest';
-    readonly collectionName: string;
-    readonly collectionDescription: string;
 }
 
 /** OP721 token metadata response */

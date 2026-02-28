@@ -1,10 +1,7 @@
 {
     "renderer": {
-        "vaultContractAddress": "op1q...",
-        "ordNodeUrl": "http://localhost:80",
+        "ordNodeUrl":  "http://localhost:80",
         "opnetRpcUrl": "https://mainnet.opnet.org/json-rpc",
-        "network": "mainnet",
-        "collectionName": "My Ordinals Collection",
-        "collectionDescription": "Ordinals bridged to OPNet — own your inscriptions as programmable NFTs"
+        "network":     "mainnet"
     }
 }
