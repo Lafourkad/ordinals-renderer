@@ -1,0 +1,60 @@
+{
+    "name": "ordinals-renderer",
+    "version": "1.0.0",
+    "description": "Serves Ordinals inscription content via OPNet nodes — tokenURI resolution + ERC721 metadata",
+    "opnetVersion": "^1.0.0",
+    "main": "dist/index.jsc",
+    "target": "bytenode",
+    "type": "plugin",
+    "checksum": "sha256:placeholder",
+    "author": {
+        "name": "OrdinalsVault"
+    },
+    "license": "Apache-2.0",
+    "pluginType": "standalone",
+    "permissions": {
+        "database": {
+            "enabled": false
+        },
+        "blocks": {
+            "preProcess": false,
+            "postProcess": false,
+            "onChange": false
+        },
+        "api": {
+            "addEndpoints": true,
+            "addWebsocket": false,
+            "basePath": "/plugins/ordinals-renderer",
+            "routes": [
+                {
+                    "path": "content/:tokenId",
+                    "method": "GET",
+                    "handler": "handleContent",
+                    "rateLimit": 200
+                },
+                {
+                    "path": "metadata/:tokenId",
+                    "method": "GET",
+                    "handler": "handleMetadata",
+                    "rateLimit": 200
+                }
+            ]
+        },
+        "filesystem": {
+            "configDir": true,
+            "tempDir": false
+        }
+    },
+    "resources": {
+        "memory": {
+            "maxHeapMB": 128
+        },
+        "timeout": {
+            "hookMs": 10000
+        }
+    },
+    "lifecycle": {
+        "loadPriority": 100,
+        "enabledByDefault": true
+    }
+}
